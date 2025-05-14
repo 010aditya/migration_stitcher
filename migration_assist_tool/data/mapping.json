@@ -1,0 +1,8 @@
+[
+  {
+    "sourcePath": "src/legacy/Example.java",
+    "targetPath": "output/com/example/Example.java",
+    "sourceType": "Service",
+    "targetType": "Service"
+  }
+]

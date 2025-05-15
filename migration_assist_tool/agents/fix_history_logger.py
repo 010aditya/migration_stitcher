@@ -1,5 +1,3 @@
-# agents/fix_history_logger.py
-
 import os
 import json
 from datetime import datetime
@@ -14,7 +12,7 @@ class FixHistoryLogger:
         file_path: str,
         agent: str,
         status: str,
-        original_code: str,
+        original_code: str | None,
         fixed_code: str | None,
         metadata: dict = None,
     ):
@@ -33,31 +31,39 @@ class FixHistoryLogger:
             "timestamp": timestamp,
             "agent": agent,
             "status": status,
-            "original_code": original_code[:2000],  # cap size
+            "original_code": original_code[:2000] if original_code else None,
             "fixed_code": fixed_code[:2000] if fixed_code else None,
             "metadata": metadata or {}
         }
 
-        # Enhance metadata with type of fix if not manually passed
-        fix_types = []
-        if metadata:
-            if "reference_fixes" in metadata:
-                for fix in metadata["reference_fixes"]:
-                    if fix.get("method") != fix.get("suggested_method"):
-                        fix_types.append("method_name_mismatch")
-                    if fix.get("class") not in file_path:
-                        fix_types.append("broken_class_ref")
+        # Detect and tag fix types automatically
+        fix_types = fix_entry["metadata"].get("fix_types", [])
+        ref_fixes = metadata.get("reference_fixes") if metadata else []
 
-        if fix_types:
-            fix_entry["metadata"]["fix_types"] = list(set(fix_types))
+        for fix in ref_fixes:
+            if fix.get("method") != fix.get("suggested_method"):
+                fix_types.append("method_name_mismatch")
+            if fix.get("class") not in file_path:
+                fix_types.append("broken_class_ref")
 
+        if "build_gradle_patch" in (metadata or {}):
+            fix_types.append("build_gradle_patch")
+
+        if agent == "CompletionAgent":
+            fix_types.append("gpt_completion")
+
+        fix_entry["metadata"]["fix_types"] = sorted(set(fix_types))
+
+        # Append to file history
         history.append(fix_entry)
 
-        # Save updated history
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
 
     def summarize_fix_types(self, file_path: str):
+        """
+        Returns a count of fix types for a given file.
+        """
         log_path = os.path.join(self.log_dir, f"{file_path.replace('/', '__')}.json")
         if not os.path.exists(log_path):
             return {}
@@ -67,8 +73,7 @@ class FixHistoryLogger:
 
         summary = {}
         for entry in history:
-            fix_types = entry.get("metadata", {}).get("fix_types", [])
-            for fix in fix_types:
+            for fix in entry.get("metadata", {}).get("fix_types", []):
                 summary[fix] = summary.get(fix, 0) + 1
 
         return summary

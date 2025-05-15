@@ -2,44 +2,73 @@
 
 import os
 import json
-import datetime
-from typing import Dict, Optional
-
+from datetime import datetime
 
 class FixHistoryLogger:
-    def __init__(self, log_dir: str = "logs/fix_history"):
+    def __init__(self, log_dir="logs/fix_history"):
         self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
 
     def log_fix(
         self,
         file_path: str,
         agent: str,
         status: str,
-        original_code: Optional[str],
-        fixed_code: Optional[str],
-        metadata: Dict
+        original_code: str,
+        fixed_code: str | None,
+        metadata: dict = None,
     ):
-        # Sanitize filename to avoid path separators
-        filename = os.path.basename(file_path).replace("/", "_").replace("\\", "_")
-        timestamp = datetime.datetime.utcnow().isoformat()
+        timestamp = datetime.utcnow().isoformat()
+        filename = file_path.replace("/", "__").replace("\\", "__")
+        log_path = os.path.join(self.log_dir, f"{filename}.json")
 
-        log_data = {
-            "file": file_path,
+        # Load existing history if present
+        history = []
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+
+        # Prepare fix log entry
+        fix_entry = {
+            "timestamp": timestamp,
             "agent": agent,
             "status": status,
-            "timestamp": timestamp,
-            "original_code": original_code or "",
-            "fixed_code": fixed_code or "",
-            "metadata": metadata
+            "original_code": original_code[:2000],  # cap size
+            "fixed_code": fixed_code[:2000] if fixed_code else None,
+            "metadata": metadata or {}
         }
 
-        # Final path for the fix log
-        log_file_path = os.path.join(self.log_dir, f"{filename}_{agent}.json")
+        # Enhance metadata with type of fix if not manually passed
+        fix_types = []
+        if metadata:
+            if "reference_fixes" in metadata:
+                for fix in metadata["reference_fixes"]:
+                    if fix.get("method") != fix.get("suggested_method"):
+                        fix_types.append("method_name_mismatch")
+                    if fix.get("class") not in file_path:
+                        fix_types.append("broken_class_ref")
 
-        try:
-            with open(log_file_path, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, indent=2)
-            print(f"📝 Fix logged: {log_file_path}")
-        except Exception as e:
-            print(f"⚠️ Failed to log fix for {file_path}: {e}")
+        if fix_types:
+            fix_entry["metadata"]["fix_types"] = list(set(fix_types))
+
+        history.append(fix_entry)
+
+        # Save updated history
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+
+    def summarize_fix_types(self, file_path: str):
+        log_path = os.path.join(self.log_dir, f"{file_path.replace('/', '__')}.json")
+        if not os.path.exists(log_path):
+            return {}
+
+        with open(log_path, "r", encoding="utf-8") as f:
+            history = json.load(f)
+
+        summary = {}
+        for entry in history:
+            fix_types = entry.get("metadata", {}).get("fix_types", [])
+            for fix in fix_types:
+                summary[fix] = summary.get(fix, 0) + 1
+
+        return summary

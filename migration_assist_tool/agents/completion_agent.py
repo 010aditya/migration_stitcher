@@ -1,5 +1,3 @@
-# agents/completion_agent.py
-
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -45,6 +43,7 @@ class CompletionAgent:
             target_path=target_path,
             enterprise_refs=enterprise_refs
         )
+        original_code = context["migrated_code"]
 
         prompt = f"""You are a Java Spring Boot migration assistant.
 
@@ -63,7 +62,7 @@ REFERENCE CODE:
 {context['reference_code']}
 
 MIGRATED FILE:
-{context['migrated_code']}
+{original_code}
 """
 
         try:
@@ -88,7 +87,7 @@ MIGRATED FILE:
                 file_path=target_path,
                 agent="CompletionAgent",
                 status="success",
-                original_code=context["migrated_code"],
+                original_code=original_code,
                 fixed_code=completed_code,
                 metadata={
                     "tokens_used": getattr(response.usage, "total_tokens", "unknown"),
@@ -111,7 +110,7 @@ MIGRATED FILE:
                 file_path=target_path,
                 agent="CompletionAgent",
                 status="failed",
-                original_code=context["migrated_code"],
+                original_code=original_code,
                 fixed_code=None,
                 metadata={"error": str(e), "model": self.model}
             )

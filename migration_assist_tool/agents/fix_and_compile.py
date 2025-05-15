@@ -33,7 +33,9 @@ class FixAndCompileAgent:
         original_code = context["migrated_code"]
 
         updated_code, reference_fixes = self._resolve_class_and_method_links(original_code)
-        if reference_fixes:
+        updated_code, injection_fixes = self._insert_missing_injections(updated_code)
+
+        if reference_fixes or injection_fixes:
             with open(migrated_file_path, "w", encoding="utf-8") as f:
                 f.write(updated_code)
             self._cleanup_java_file(migrated_file_path)
@@ -41,17 +43,12 @@ class FixAndCompileAgent:
         prompt = self._build_prompt(context, updated_code)
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are a helpful Java Spring Boot migration bot."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=4000
-            )
+            response = self.client.invoke([
+                {"role": "system", "content": "You are a helpful Java Spring Boot migration bot."},
+                {"role": "user", "content": prompt}
+            ])
 
-            fixed_code = response.choices[0].message.content.strip()
+            fixed_code = response.content.strip()
             with open(migrated_file_path, "w", encoding="utf-8") as f:
                 f.write(fixed_code)
 
@@ -63,7 +60,10 @@ class FixAndCompileAgent:
                 status="success",
                 original_code=original_code,
                 fixed_code=fixed_code,
-                metadata={"reference_fixes": reference_fixes}
+                metadata={
+                    "reference_fixes": reference_fixes,
+                    "injection_fixes": injection_fixes
+                }
             )
 
             return {
@@ -71,7 +71,8 @@ class FixAndCompileAgent:
                 "fix_log": {
                     "status": "success",
                     "file": target_path,
-                    "reference_fixes": reference_fixes
+                    "reference_fixes": reference_fixes,
+                    "injection_fixes": injection_fixes
                 }
             }
 
@@ -94,11 +95,36 @@ class FixAndCompileAgent:
                 "fixed_code": ""
             }
 
+    def _insert_missing_injections(self, code: str) -> tuple[str, list]:
+        lines = code.splitlines()
+        declared_fields = re.findall(r'private\s+(\w+)\s+(\w+);', code)
+        declared_vars = {var for _, var in declared_fields}
+        used_vars = re.findall(r'(\w+)\.', code)
+
+        missing = set(used_vars) - declared_vars
+        fixes = []
+
+        for var in missing:
+            guessed_class = var[0].upper() + var[1:]  # e.g., userService -> UserService
+            class_file = self._find_class_file(guessed_class)
+            if class_file:
+                inject_line = f"    @Autowired\n    private {guessed_class} {var};"
+                for idx, line in enumerate(lines):
+                    if line.strip().startswith("public class"):
+                        lines.insert(idx + 1, inject_line)
+                        fixes.append({"field": var, "injected_class": guessed_class})
+                        break
+        return "\n".join(lines), fixes
+
     def _cleanup_java_file(self, filepath):
         if filepath.endswith(".java") and os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-            cleaned = [line for line in lines if line.strip() not in ("```java", "```")]
+            ignore_starts = ("```", "// Here", "Here is", "/*", "This method", "#", "```java", "-")
+            cleaned = [
+                line for line in lines
+                if not any(line.strip().startswith(prefix) for prefix in ignore_starts)
+            ]
             with open(filepath, "w", encoding="utf-8") as f:
                 f.writelines(cleaned)
 
@@ -130,13 +156,11 @@ MIGRATED FILE:
             class_file = self._find_class_file(class_name)
             if not class_file:
                 continue
-
             class_path = os.path.join(self.migrated_dir, class_file)
             if os.path.exists(class_path):
                 with open(class_path, "r", encoding="utf-8") as f:
                     class_code = f.read()
                 available_methods = re.findall(r'public\s+\w+\s+(\w+)\s*\(', class_code)
-
                 calls = re.findall(rf'{var_name}\.(\w+)\(', code)
                 for call in calls:
                     if call not in available_methods:
@@ -149,7 +173,6 @@ MIGRATED FILE:
                                 "method": call,
                                 "suggested_method": suggestion
                             })
-
         return code, applied_fixes
 
     def _find_class_file(self, class_name: str) -> str | None:
@@ -166,12 +189,9 @@ MIGRATED FILE:
 {class_code}
 
 Only return the method name. No explanation."""
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=20
-            )
-            return response.choices[0].message.content.strip()
+            response = self.client.invoke([
+                {"role": "user", "content": prompt}
+            ])
+            return response.content.strip()
         except Exception:
             return None

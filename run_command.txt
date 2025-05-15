@@ -1,1 +1,3 @@
 python cli.py --legacy legacy_codebase/ --migrated migration_output/ --map data/mapping.json --enterprise enterprise_framework/
+
+gh repo create migration_stitcher --public --source=. --remote=origin --push

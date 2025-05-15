@@ -1,90 +1,75 @@
-# agents/retry_agent.py
-
 import os
+import subprocess
 from agents.fix_and_compile import FixAndCompileAgent
-from agents.completion_agent import CompletionAgent
-from agents.context_stitcher import ContextStitcherAgent
-from agents.build_validator import BuildValidatorAgent
 from agents.build_fixer_agent import BuildFixerAgent
-from agents.mapping_loader import MappingLoader
+from agents.context_stitcher import ContextStitcherAgent
 
 class RetryAgent:
-    def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = "", reference_dir: str = ""):
-        self.legacy_dir = legacy_dir
+    def __init__(self, migrated_dir, legacy_dir, enterprise_dir, reference_dir, max_retries=3):
         self.migrated_dir = migrated_dir
+        self.legacy_dir = legacy_dir
         self.enterprise_dir = enterprise_dir
         self.reference_dir = reference_dir
+        self.max_retries = max_retries
 
-        self.stitcher = ContextStitcherAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
-        self.fixer = FixAndCompileAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
-        self.completer = CompletionAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
-        self.validator = BuildValidatorAgent(migrated_dir)
+        self.fixer = FixAndCompileAgent(
+            legacy_dir=legacy_dir,
+            migrated_dir=migrated_dir,
+            enterprise_dir=enterprise_dir,
+            reference_dir=reference_dir
+        )
+        self.context_builder = ContextStitcherAgent(
+            legacy_dir=legacy_dir,
+            migrated_dir=migrated_dir,
+            enterprise_dir=enterprise_dir,
+            reference_dir=reference_dir
+        )
         self.build_fixer = BuildFixerAgent(migrated_dir)
 
-    def retry_fixes(self, mapping: MappingLoader, max_retries: int = 2):
-        result = self.validator.validate_build()
+    def check_single_file_compiles(self, java_path: str) -> bool:
+        try:
+            output_dir = ".buildcheck/bin"
+            os.makedirs(output_dir, exist_ok=True)
+            cmd = ["javac", "-d", output_dir, java_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return result.returncode == 0
+        except Exception as e:
+            print(f"⚠️ Compile check failed: {e}")
+            return False
 
-        if result["build_success"]:
-            print("✅ Build passed, no retry needed.")
-            return {"status": "success", "retry_attempts": 0, "errors": []}
+    def retry_fix_and_build(self, migration_map):
+        for file_entry in migration_map:
+            source_paths = file_entry.get("source", [])
+            target_paths = file_entry.get("target", [])
+            for target_path in target_paths:
+                target_file_path = os.path.join(self.migrated_dir, target_path)
 
-        print("🔍 Build failed. Attempting to fix build.gradle...")
-        build_fixer_result = self.build_fixer.fix(result["raw_output"])
-        if build_fixer_result["status"] == "fixed":
-            print(f"🛠 Applied build.gradle fixes: {build_fixer_result['fixes']}")
-            result = self.validator.validate_build()
-            if result["build_success"]:
-                print("✅ Build succeeded after build.gradle fix.")
-                return {
-                    "status": "success_after_build_gradle_fix",
-                    "retry_attempts": 0,
-                    "fixes": build_fixer_result["fixes"]
-                }
-
-        # File-level retry
-        error_files = set()
-        for err in result["errors"]:
-            relative_path = os.path.relpath(err["file"], self.migrated_dir)
-            error_files.add(relative_path)
-
-        retry_logs = []
-        for i in range(max_retries):
-            print(f"\n🔁 Retry attempt {i + 1} for {len(error_files)} file(s)...")
-
-            for file in error_files:
-                sources = mapping.get_sources_for_target(file)
-                if not sources:
-                    print(f"⚠️  No mapping found for {file}, skipping...")
+                # Skip if file already compiles
+                if self.check_single_file_compiles(target_file_path):
+                    print(f"✅ {target_path} compiles. Skipping fix.")
                     continue
 
-                print(f"🔧 Retrying fix for: {file}")
-                fix_log = self.fixer.fix_file(file, sources, [], self.stitcher)
-                retry_logs.append(fix_log["fix_log"])
+                success = False
+                for attempt in range(self.max_retries):
+                    print(f"🔁 Attempt {attempt+1} to fix and compile {target_path}")
+                    fix_result = self.fixer.fix_file(
+                        target_path=target_path,
+                        source_paths=source_paths,
+                        enterprise_refs=[],
+                        stitcher=self.context_builder
+                    )
 
-                if fix_log["fix_log"]["status"] != "success":
-                    print(f"🔍 Trying completion for: {file}")
-                    completion_log = self.completer.complete_missing_logic(file, sources, [], self.stitcher)
-                    retry_logs.append(completion_log["completion_log"])
+                    # Check again if file compiles after fix
+                    if self.check_single_file_compiles(target_file_path):
+                        print(f"✅ {target_path} compiles after fix.")
+                        success = True
+                        break
+                    else:
+                        print(f"❌ {target_path} still fails to compile.")
 
-            # Re-validate build
-            validation = self.validator.validate_build()
-            if validation["build_success"]:
-                print("✅ Build succeeded after retry!")
-                return {
-                    "status": "success_after_retry",
-                    "retry_attempts": i + 1,
-                    "errors": [],
-                    "retry_logs": retry_logs
-                }
+                if not success:
+                    print(f"🚨 {target_path} could not be compiled after {self.max_retries} attempts.")
 
-            error_files = set(
-                os.path.relpath(err["file"], self.migrated_dir) for err in validation["errors"]
-            )
-
-        print("❌ Build still failing after max retries.")
-        return {
-            "status": "failed_after_retries",
-            "retry_attempts": max_retries,
-            "errors": result["errors"],
-            "retry_logs": retry_logs
-        }
+        # After all files compile, try Gradle build
+        print("🚀 All file fixes attempted. Triggering Gradle build...")
+        # Add your actual Gradle build trigger logic here

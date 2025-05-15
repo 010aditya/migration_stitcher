@@ -1,9 +1,9 @@
 import os
 import re
 from dotenv import load_dotenv
-from openai import OpenAI
 from agents.fix_history_logger import FixHistoryLogger
 from agents.context_stitcher import ContextStitcherAgent
+from utils.llm_loader import get_llm
 
 load_dotenv()
 
@@ -14,8 +14,7 @@ class FixAndCompileAgent:
         self.enterprise_dir = enterprise_dir
         self.reference_dir = reference_dir
 
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.client = get_llm()
         self.logger = FixHistoryLogger()
 
     def fix_file(self, target_path, source_paths, enterprise_refs, stitcher: ContextStitcherAgent):
@@ -33,20 +32,17 @@ class FixAndCompileAgent:
         )
         original_code = context["migrated_code"]
 
-        # Step 1: Try static resolution for class+method
         updated_code, reference_fixes = self._resolve_class_and_method_links(original_code)
-
         if reference_fixes:
             with open(migrated_file_path, "w", encoding="utf-8") as f:
                 f.write(updated_code)
             self._cleanup_java_file(migrated_file_path)
 
-        # Step 2: Final GPT refinement using full context
         prompt = self._build_prompt(context, updated_code)
 
         try:
             response = self.client.chat.completions.create(
-                model=self.model,
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "You are a helpful Java Spring Boot migration bot."},
                     {"role": "user", "content": prompt}
@@ -67,7 +63,7 @@ class FixAndCompileAgent:
                 status="success",
                 original_code=original_code,
                 fixed_code=fixed_code,
-                metadata={"model": self.model, "reference_fixes": reference_fixes}
+                metadata={"reference_fixes": reference_fixes}
             )
 
             return {
@@ -75,7 +71,6 @@ class FixAndCompileAgent:
                 "fix_log": {
                     "status": "success",
                     "file": target_path,
-                    "model": self.model,
                     "reference_fixes": reference_fixes
                 }
             }
@@ -89,6 +84,7 @@ class FixAndCompileAgent:
                 fixed_code=None,
                 metadata={"error": str(e)}
             )
+
             return {
                 "fix_log": {
                     "status": "failed",

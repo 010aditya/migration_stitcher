@@ -2,10 +2,10 @@ import os
 import hashlib
 import json
 from typing import List, Tuple
-from openai import OpenAI
 from dotenv import load_dotenv
 import tiktoken
 from pathlib import Path
+from utils.llm_loader import get_embedding_client  # ✅ Unified embedding loader
 
 load_dotenv()
 
@@ -14,7 +14,7 @@ class ReferencePromoterAgent:
         self.reference_dir = reference_dir
         self.cache_path = cache_path
         self.model = model
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = get_embedding_client()  # ✅ Now supports Azure & OpenAI
         self.embeddings = {}
         self.encoder = tiktoken.encoding_for_model("gpt-4")
         self._load_or_init_cache()
@@ -53,8 +53,7 @@ class ReferencePromoterAgent:
                 content_hash = self._hash_file(content)
                 if path_str in self.embeddings and self.embeddings[path_str]["hash"] == content_hash:
                     continue
-                response = self.client.embeddings.create(input=[content], model=self.model)
-                vector = response.data[0].embedding
+                vector = self.client.embed_query(content)
                 self.embeddings[path_str] = {"hash": content_hash, "embedding": vector}
                 updated += 1
             except Exception as e:
@@ -73,10 +72,11 @@ class ReferencePromoterAgent:
 
     def search_similar_files(self, query_code: str, top_k: int = 3, max_tokens: int = 3000) -> List[Tuple[str, str]]:
         try:
-            query_embed = self.client.embeddings.create(input=[query_code], model=self.model).data[0].embedding
+            query_embed = self.client.embed_query(query_code)
         except Exception as e:
             print(f"❌ Embedding failed for query: {e}")
             return []
+
         scored_files = []
         for path, meta in self.embeddings.items():
             try:
@@ -87,5 +87,6 @@ class ReferencePromoterAgent:
                     scored_files.append((path, content, sim))
             except Exception:
                 continue
+
         top = sorted(scored_files, key=lambda x: x[2], reverse=True)[:top_k]
         return [(path, content) for path, content, _ in top]

@@ -1,8 +1,8 @@
 import os
 from dotenv import load_dotenv
-from openai import OpenAI
 from agents.fix_history_logger import FixHistoryLogger
 from agents.context_stitcher import ContextStitcherAgent
+from utils.llm_loader import get_llm
 
 load_dotenv()
 
@@ -13,8 +13,7 @@ class CompletionAgent:
         self.enterprise_dir = enterprise_dir
         self.reference_dir = reference_dir
 
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.client = get_llm()
         self.logger = FixHistoryLogger()
 
     def complete_missing_logic(self, target_path: str, source_paths: list, enterprise_refs: list, stitcher: ContextStitcherAgent):
@@ -67,7 +66,7 @@ MIGRATED FILE:
 
         try:
             response = self.client.chat.completions.create(
-                model=self.model,
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "You are a Java Spring Boot code completion agent."},
                     {"role": "user", "content": prompt}
@@ -89,19 +88,14 @@ MIGRATED FILE:
                 status="success",
                 original_code=original_code,
                 fixed_code=completed_code,
-                metadata={
-                    "tokens_used": getattr(response.usage, "total_tokens", "unknown"),
-                    "model": self.model
-                }
+                metadata={"model": "gpt-4o"}
             )
 
             return {
                 "fixed_code": completed_code,
                 "completion_log": {
                     "status": "success",
-                    "file": target_path,
-                    "tokens_used": getattr(response.usage, "total_tokens", "unknown"),
-                    "model": self.model
+                    "file": target_path
                 }
             }
 
@@ -112,7 +106,7 @@ MIGRATED FILE:
                 status="failed",
                 original_code=original_code,
                 fixed_code=None,
-                metadata={"error": str(e), "model": self.model}
+                metadata={"error": str(e)}
             )
 
             return {

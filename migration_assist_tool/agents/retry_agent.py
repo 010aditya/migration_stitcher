@@ -6,17 +6,18 @@ from agents.completion_agent import CompletionAgent
 from agents.context_stitcher import ContextStitcherAgent
 from agents.build_validator import BuildValidatorAgent
 from agents.build_fixer_agent import BuildFixerAgent
-from agents.mapping_loader import MappingLoader  # Make sure this is available
+from agents.mapping_loader import MappingLoader
 
 class RetryAgent:
-    def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = ""):
+    def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = "", reference_dir: str = ""):
         self.legacy_dir = legacy_dir
         self.migrated_dir = migrated_dir
         self.enterprise_dir = enterprise_dir
+        self.reference_dir = reference_dir
 
-        self.stitcher = ContextStitcherAgent(legacy_dir, migrated_dir, enterprise_dir)
-        self.fixer = FixAndCompileAgent(legacy_dir, migrated_dir, enterprise_dir)
-        self.completer = CompletionAgent(legacy_dir, migrated_dir, enterprise_dir)
+        self.stitcher = ContextStitcherAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
+        self.fixer = FixAndCompileAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
+        self.completer = CompletionAgent(legacy_dir, migrated_dir, enterprise_dir, reference_dir)
         self.validator = BuildValidatorAgent(migrated_dir)
         self.build_fixer = BuildFixerAgent(migrated_dir)
 
@@ -27,7 +28,6 @@ class RetryAgent:
             print("✅ Build passed, no retry needed.")
             return {"status": "success", "retry_attempts": 0, "errors": []}
 
-        # Step 1: Attempt build.gradle fix
         print("🔍 Build failed. Attempting to fix build.gradle...")
         build_fixer_result = self.build_fixer.fix(result["raw_output"])
         if build_fixer_result["status"] == "fixed":
@@ -41,7 +41,7 @@ class RetryAgent:
                     "fixes": build_fixer_result["fixes"]
                 }
 
-        # Step 2: Retry file-based fixes
+        # File-level retry
         error_files = set()
         for err in result["errors"]:
             relative_path = os.path.relpath(err["file"], self.migrated_dir)
@@ -51,7 +51,6 @@ class RetryAgent:
         for i in range(max_retries):
             print(f"\n🔁 Retry attempt {i + 1} for {len(error_files)} file(s)...")
 
-            new_errors = []
             for file in error_files:
                 sources = mapping.get_sources_for_target(file)
                 if not sources:

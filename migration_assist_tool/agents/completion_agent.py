@@ -3,15 +3,17 @@
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-from agents.context_stitcher import ContextStitcherAgent
 from agents.fix_history_logger import FixHistoryLogger
+from agents.context_stitcher import ContextStitcherAgent
+
+load_dotenv()
 
 class CompletionAgent:
-    def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = ""):
-        load_dotenv()
+    def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = "", reference_dir: str = ""):
         self.legacy_dir = legacy_dir
         self.migrated_dir = migrated_dir
         self.enterprise_dir = enterprise_dir
+        self.reference_dir = reference_dir
 
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -31,30 +33,36 @@ class CompletionAgent:
             )
             return {
                 "fixed_code": "",
-                "completion_log": {"status": "failed", "reason": "Target file not found", "file": target_path}
+                "completion_log": {
+                    "status": "failed",
+                    "reason": "Target file not found",
+                    "file": target_path
+                }
             }
 
-        # Build stitched context
         context = stitcher.build_context(
             source_paths=source_paths,
             target_path=target_path,
             enterprise_refs=enterprise_refs
         )
 
-        prompt = f"""You are a Java migration assistant.
+        prompt = f"""You are a Java Spring Boot migration assistant.
 
 Your task is to detect and complete any missing methods or logic in the 'MIGRATED FILE'.
-Use 'LEGACY FILE(S)' and 'ENTERPRISE REFERENCES' for reference.
+Use the 'LEGACY CODE', 'ENTERPRISE REFERENCES', and 'REFERENCE CODE' as guidance.
 
-Only return the complete updated Java file.
+Only return the complete, corrected Java file.
 
-LEGACY FILE(S):
+LEGACY CODE:
 {context['legacy_code']}
 
 ENTERPRISE REFERENCES:
 {context['enterprise_code']}
 
-MIGRATED FILE (Incomplete):
+REFERENCE CODE:
+{context['reference_code']}
+
+MIGRATED FILE:
 {context['migrated_code']}
 """
 
@@ -73,6 +81,8 @@ MIGRATED FILE (Incomplete):
 
             with open(full_target_path, "w", encoding="utf-8") as f:
                 f.write(completed_code)
+
+            self._cleanup_java_file(full_target_path)
 
             self.logger.log_fix(
                 file_path=target_path,
@@ -114,3 +124,11 @@ MIGRATED FILE (Incomplete):
                     "error": str(e)
                 }
             }
+
+    def _cleanup_java_file(self, filepath):
+        if filepath.endswith(".java") and os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            cleaned = [line for line in lines if line.strip() not in ("```java", "```")]
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.writelines(cleaned)

@@ -1,15 +1,21 @@
 # agents/gradle_setup_agent.py
 
 import os
-import shutil
+import re
 import xml.etree.ElementTree as ET
-
+from agents.reference_promoter import ReferencePromoterAgent
 
 class GradleSetupAgent:
-    def __init__(self, migrated_dir: str, legacy_dir: str, template_dir: str = "config/templates"):
+    def __init__(self, migrated_dir: str, legacy_dir: str, reference_dir: str = "", template_dir: str = "config/templates"):
         self.migrated_dir = migrated_dir
         self.legacy_dir = legacy_dir
+        self.reference_dir = reference_dir
         self.template_dir = template_dir
+
+        self.promoter = None
+        if reference_dir:
+            self.promoter = ReferencePromoterAgent(reference_dir)
+            self.promoter.build_embedding_index()
 
     def setup(self):
         build_gradle = os.path.join(self.migrated_dir, "build.gradle")
@@ -22,7 +28,8 @@ class GradleSetupAgent:
                 print("🛠 Generating build.gradle from pom.xml...")
                 self._generate_build_gradle_from_pom(pom_path)
             else:
-                self._write_file(build_gradle, self._fallback_build_gradle())
+                inferred_deps = self._infer_dependencies_from_reference()
+                self._write_file(build_gradle, self._fallback_build_gradle(extra_deps=inferred_deps))
 
         if not os.path.exists(settings_gradle):
             artifact_id = self._get_artifact_id_from_pom(pom_path) if pom_path else "migrated-project"
@@ -58,7 +65,6 @@ class GradleSetupAgent:
             version = root.find("m:version", ns)
 
             group = group_id.text if group_id is not None else "com.migrated"
-            artifact = artifact_id.text if artifact_id is not None else "migrated-project"
             ver = version.text if version is not None else "1.0.0"
 
             dependencies = []
@@ -127,8 +133,11 @@ zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists
 """)
 
-    def _fallback_build_gradle(self):
-        return """\
+    def _fallback_build_gradle(self, extra_deps=None):
+        if extra_deps is None:
+            extra_deps = []
+
+        base = """\
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.2.0'
@@ -147,9 +156,41 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
-}
-
-test {
-    useJUnitPlatform()
-}
 """
+
+        for line in extra_deps:
+            base += f"\n    {line}"
+        base += "\n}\ntest { useJUnitPlatform() }"
+        return base
+
+    def _infer_dependencies_from_reference(self):
+        if not self.promoter:
+            return []
+
+        sample_code = ""
+        for root, _, files in os.walk(self.migrated_dir):
+            for file in files:
+                if file.endswith(".java"):
+                    try:
+                        with open(os.path.join(root, file), "r", encoding="utf-8") as f:
+                            sample_code = f.read()
+                        if sample_code:
+                            break
+                    except Exception:
+                        continue
+            if sample_code:
+                break
+
+        if not sample_code:
+            return []
+
+        print("🔍 Inferring dependencies from reference projects...")
+        matches = self.promoter.search_similar_files(sample_code, top_k=3, max_tokens=3000)
+        all_lines = []
+        for _, content in matches:
+            for line in content.splitlines():
+                if "implementation" in line or "testImplementation" in line:
+                    all_lines.append(line.strip())
+
+        unique_deps = sorted(set(all_lines))
+        return unique_deps

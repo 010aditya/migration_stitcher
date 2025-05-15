@@ -1,73 +1,46 @@
 # agents/context_stitcher.py
 
 import os
-import re
-from typing import List, Dict, Optional
+from agents.reference_promoter import ReferencePromoterAgent
 
 class ContextStitcherAgent:
-    def __init__(self, legacy_root: str, migrated_root: str, enterprise_root: Optional[str] = None):
-        self.legacy_root = legacy_root
-        self.migrated_root = migrated_root
-        self.enterprise_root = enterprise_root
+    def __init__(self, legacy_dir, migrated_dir, enterprise_dir="", reference_dir=""):
+        self.legacy_dir = legacy_dir
+        self.migrated_dir = migrated_dir
+        self.enterprise_dir = enterprise_dir
+        self.reference_dir = reference_dir
 
-    def _read_file(self, full_path: str) -> str:
-        if not os.path.exists(full_path):
-            return f"// FILE NOT FOUND: {full_path}\n"
-        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
+        self.promoter = None
+        if reference_dir:
+            self.promoter = ReferencePromoterAgent(reference_dir)
+            self.promoter.build_embedding_index()
 
-    def _extract_method_calls(self, code: str) -> List[str]:
-        # Naive method call extractor: matches `xyz();`, `xyz(param)` etc.
-        matches = re.findall(r'\b(\w+)\s*\(', code)
-        excluded = {'if', 'for', 'while', 'switch', 'return', 'catch', 'super', 'this', 'new'}
-        return list(set([m for m in matches if m not in excluded]))
-
-    def _extract_methods_from_legacy(self, legacy_code: str, method_names: List[str]) -> str:
-        extracted = []
-        for method in method_names:
-            # Match method signature and body (naive but useful)
-            pattern = re.compile(
-                rf"(public|protected|private|static|\s)+[\w<>\[\]]+\s+{re.escape(method)}\s*\([^)]*\)\s*\{{(?:[^{{}}]*|\{{[^{{}}]*\}})*\}}",
-                re.MULTILINE
-            )
-            matches = pattern.findall(legacy_code)
-            if matches:
-                extracted.extend(matches)
-        return "\n\n".join(extracted)
-
-    def build_context(
-        self,
-        source_paths: List[str],
-        target_path: str,
-        enterprise_refs: Optional[List[str]] = None
-    ) -> Dict[str, str]:
-        context = {}
-
-        # ✅ Load migrated file
-        migrated_full_path = os.path.join(self.migrated_root, target_path)
-        migrated_code = self._read_file(migrated_full_path)
-        context["migrated_code"] = migrated_code
-
-        # ✅ Extract called methods
-        called_methods = self._extract_method_calls(migrated_code)
-
-        # ✅ Load legacy method(s)
-        legacy_contents = []
-        for src in source_paths:
-            legacy_full_path = os.path.join(self.legacy_root, src)
-            legacy_code = self._read_file(legacy_full_path)
-            partial_code = self._extract_methods_from_legacy(legacy_code, called_methods)
-            legacy_contents.append(f"// Extracted from: {src}\n" + partial_code)
-
-        context["legacy_code"] = "\n\n".join(legacy_contents)
-
-        # ✅ Load enterprise references
-        enterprise_contents = []
-        if self.enterprise_root and enterprise_refs:
-            for ref in enterprise_refs:
-                full_path = os.path.join(self.enterprise_root, ref)
-                enterprise_contents.append(f"// Enterprise: {ref}\n" + self._read_file(full_path))
-
-        context["enterprise_code"] = "\n\n".join(enterprise_contents)
-
+    def build_context(self, source_paths, target_path, enterprise_refs):
+        migrated_code = self._read_file(self.migrated_dir, target_path)
+        context = {
+            "legacy_code": self._read_files(self.legacy_dir, source_paths),
+            "migrated_code": migrated_code,
+            "enterprise_code": self._read_files(self.enterprise_dir, enterprise_refs) if self.enterprise_dir else "",
+            "reference_code": self._get_reference_code(migrated_code) if self.promoter else ""
+        }
         return context
+
+    def _read_files(self, base_dir, paths):
+        code_blocks = []
+        for path in paths:
+            full_path = os.path.join(base_dir, path)
+            if os.path.exists(full_path):
+                with open(full_path, "r", encoding="utf-8") as f:
+                    code_blocks.append(f.read())
+        return "\n\n".join(code_blocks)
+
+    def _read_file(self, base_dir, path):
+        full_path = os.path.join(base_dir, path)
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+
+    def _get_reference_code(self, migrated_code):
+        top_matches = self.promoter.search_similar_files(migrated_code, top_k=2, max_tokens=3000)
+        return "\n\n".join(content for _, content in top_matches)

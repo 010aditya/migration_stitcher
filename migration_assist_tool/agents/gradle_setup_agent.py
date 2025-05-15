@@ -1,5 +1,3 @@
-# agents/gradle_setup_agent.py
-
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -25,7 +23,6 @@ class GradleSetupAgent:
 
         if not os.path.exists(build_gradle):
             if pom_path:
-                print("🛠 Generating build.gradle from pom.xml...")
                 self._generate_build_gradle_from_pom(pom_path)
             else:
                 inferred_deps = self._infer_dependencies_from_reference()
@@ -157,7 +154,6 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 """
-
         for line in extra_deps:
             base += f"\n    {line}"
         base += "\n}\ntest { useJUnitPlatform() }"

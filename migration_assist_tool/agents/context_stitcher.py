@@ -1,5 +1,3 @@
-# agents/context_stitcher.py
-
 import os
 from agents.reference_promoter import ReferencePromoterAgent
 

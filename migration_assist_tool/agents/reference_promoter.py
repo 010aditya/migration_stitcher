@@ -1,13 +1,10 @@
-# agents/reference_promoter.py
-
 import os
 import hashlib
 import json
-from typing import List, Dict, Tuple
+from typing import List, Tuple
 from openai import OpenAI
 from dotenv import load_dotenv
-
-import tiktoken  # for token count
+import tiktoken
 from pathlib import Path
 
 load_dotenv()
@@ -53,29 +50,17 @@ class ReferencePromoterAgent:
             try:
                 with open(path_str, "r", encoding="utf-8") as f:
                     content = f.read()
-
                 content_hash = self._hash_file(content)
                 if path_str in self.embeddings and self.embeddings[path_str]["hash"] == content_hash:
-                    continue  # Already cached
-
-                response = self.client.embeddings.create(
-                    input=[content],
-                    model=self.model
-                )
+                    continue
+                response = self.client.embeddings.create(input=[content], model=self.model)
                 vector = response.data[0].embedding
-                self.embeddings[path_str] = {
-                    "hash": content_hash,
-                    "embedding": vector
-                }
+                self.embeddings[path_str] = {"hash": content_hash, "embedding": vector}
                 updated += 1
             except Exception as e:
                 print(f"⚠️ Error indexing {path_str}: {e}")
-
         if updated > 0:
             self._save_cache()
-            print(f"🔄 Updated {updated} reference embeddings.")
-        else:
-            print("✅ Reference embedding cache is up to date.")
 
     def _cosine_similarity(self, vec1, vec2):
         dot = sum(a * b for a, b in zip(vec1, vec2))
@@ -88,26 +73,19 @@ class ReferencePromoterAgent:
 
     def search_similar_files(self, query_code: str, top_k: int = 3, max_tokens: int = 3000) -> List[Tuple[str, str]]:
         try:
-            query_embed = self.client.embeddings.create(
-                input=[query_code],
-                model=self.model
-            ).data[0].embedding
+            query_embed = self.client.embeddings.create(input=[query_code], model=self.model).data[0].embedding
         except Exception as e:
             print(f"❌ Embedding failed for query: {e}")
             return []
-
         scored_files = []
         for path, meta in self.embeddings.items():
             try:
                 sim = self._cosine_similarity(query_embed, meta["embedding"])
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-                tokens = self._token_count(content)
-                if tokens <= max_tokens:
+                if self._token_count(content) <= max_tokens:
                     scored_files.append((path, content, sim))
             except Exception:
                 continue
-
-        # Sort by similarity
         top = sorted(scored_files, key=lambda x: x[2], reverse=True)[:top_k]
         return [(path, content) for path, content, _ in top]

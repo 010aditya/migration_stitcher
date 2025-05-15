@@ -2,7 +2,7 @@
 
 import os
 import shutil
-from maven_tools import MavenProject
+import xml.etree.ElementTree as ET
 
 
 class GradleSetupAgent:
@@ -15,16 +15,18 @@ class GradleSetupAgent:
         build_gradle = os.path.join(self.migrated_dir, "build.gradle")
         settings_gradle = os.path.join(self.migrated_dir, "settings.gradle")
 
+        pom_path = self._find_pom()
+
         if not os.path.exists(build_gradle):
-            print("🛠 Generating build.gradle from pom.xml...")
-            pom_path = self._find_pom()
             if pom_path:
+                print("🛠 Generating build.gradle from pom.xml...")
                 self._generate_build_gradle_from_pom(pom_path)
             else:
                 self._write_file(build_gradle, self._fallback_build_gradle())
 
         if not os.path.exists(settings_gradle):
-            self._generate_settings_gradle_from_pom()
+            artifact_id = self._get_artifact_id_from_pom(pom_path) if pom_path else "migrated-project"
+            self._write_file(settings_gradle, f"rootProject.name = '{artifact_id}'\n")
 
         self._ensure_gradle_wrapper()
         return {"status": "complete"}
@@ -35,54 +37,68 @@ class GradleSetupAgent:
                 return os.path.join(root, "pom.xml")
         return None
 
+    def _get_artifact_id_from_pom(self, pom_path):
+        try:
+            tree = ET.parse(pom_path)
+            root = tree.getroot()
+            ns = {'m': root.tag.split('}')[0].strip('{')}
+            artifact_id = root.find("m:artifactId", ns)
+            return artifact_id.text if artifact_id is not None else "migrated-project"
+        except Exception:
+            return "migrated-project"
+
     def _generate_build_gradle_from_pom(self, pom_path):
-        project = MavenProject(pom_path)
-        deps = project.get_dependencies()
-        group_id = project.get_group_id()
-        artifact_id = project.get_artifact_id()
-        version = project.get_version()
+        try:
+            tree = ET.parse(pom_path)
+            root = tree.getroot()
+            ns = {'m': root.tag.split('}')[0].strip('{')}
 
-        lines = [
-            "plugins {",
-            "    id 'java'",
-            "    id 'org.springframework.boot' version '3.2.0'",
-            "    id 'io.spring.dependency-management' version '1.1.0'",
-            "}",
-            "",
-            f"group = '{group_id}'",
-            f"version = '{version or '1.0.0'}'",
-            "sourceCompatibility = '21'",
-            "",
-            "repositories {",
-            "    mavenCentral()",
-            "}",
-            "",
-            "dependencies {"
-        ]
+            group_id = root.find("m:groupId", ns)
+            artifact_id = root.find("m:artifactId", ns)
+            version = root.find("m:version", ns)
 
-        for d in deps:
-            scope = d.get("scope", "compile")
-            if scope in ("compile", "runtime", "provided", "system"):
-                lines.append(f"    implementation '{d['groupId']}:{d['artifactId']}:{d['version']}'")
-            elif scope == "test":
-                lines.append(f"    testImplementation '{d['groupId']}:{d['artifactId']}:{d['version']}'")
+            group = group_id.text if group_id is not None else "com.migrated"
+            artifact = artifact_id.text if artifact_id is not None else "migrated-project"
+            ver = version.text if version is not None else "1.0.0"
 
-        lines.append("}")
-        lines.append("test { useJUnitPlatform() }")
+            dependencies = []
+            deps = root.find("m:dependencies", ns)
+            if deps is not None:
+                for dep in deps.findall("m:dependency", ns):
+                    g = dep.find("m:groupId", ns)
+                    a = dep.find("m:artifactId", ns)
+                    v = dep.find("m:version", ns)
+                    scope = dep.find("m:scope", ns)
+                    if g is not None and a is not None and v is not None:
+                        line = f"    {'testImplementation' if (scope is not None and scope.text == 'test') else 'implementation'} '{g.text}:{a.text}:{v.text}'"
+                        dependencies.append(line)
 
-        build_gradle_path = os.path.join(self.migrated_dir, "build.gradle")
-        self._write_file(build_gradle_path, "\n".join(lines))
+            gradle_lines = [
+                "plugins {",
+                "    id 'java'",
+                "    id 'org.springframework.boot' version '3.2.0'",
+                "    id 'io.spring.dependency-management' version '1.1.0'",
+                "}",
+                "",
+                f"group = '{group}'",
+                f"version = '{ver}'",
+                "sourceCompatibility = '21'",
+                "",
+                "repositories {",
+                "    mavenCentral()",
+                "}",
+                "",
+                "dependencies {"
+            ]
+            gradle_lines.extend(dependencies)
+            gradle_lines.append("}")
+            gradle_lines.append("test { useJUnitPlatform() }")
 
-    def _generate_settings_gradle_from_pom(self):
-        pom_path = self._find_pom()
-        artifact_id = "migrated-project"
-        if pom_path:
-            project = MavenProject(pom_path)
-            artifact_id = project.get_artifact_id() or "migrated-project"
-        self._write_file(
-            os.path.join(self.migrated_dir, "settings.gradle"),
-            f"rootProject.name = '{artifact_id}'\n"
-        )
+            self._write_file(os.path.join(self.migrated_dir, "build.gradle"), "\n".join(gradle_lines))
+
+        except Exception as e:
+            print(f"⚠️ Failed to parse pom.xml: {e}")
+            self._write_file(os.path.join(self.migrated_dir, "build.gradle"), self._fallback_build_gradle())
 
     def _write_file(self, path: str, content: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)

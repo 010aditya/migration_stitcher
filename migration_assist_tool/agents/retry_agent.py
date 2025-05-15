@@ -5,6 +5,8 @@ from agents.fix_and_compile import FixAndCompileAgent
 from agents.completion_agent import CompletionAgent
 from agents.context_stitcher import ContextStitcherAgent
 from agents.build_validator import BuildValidatorAgent
+from agents.build_fixer_agent import BuildFixerAgent
+from agents.mapping_loader import MappingLoader  # Make sure this is available
 
 class RetryAgent:
     def __init__(self, legacy_dir: str, migrated_dir: str, enterprise_dir: str = ""):
@@ -16,14 +18,30 @@ class RetryAgent:
         self.fixer = FixAndCompileAgent(legacy_dir, migrated_dir, enterprise_dir)
         self.completer = CompletionAgent(legacy_dir, migrated_dir, enterprise_dir)
         self.validator = BuildValidatorAgent(migrated_dir)
+        self.build_fixer = BuildFixerAgent(migrated_dir)
 
-    def retry_fixes(self, mapping: dict, max_retries: int = 2):
+    def retry_fixes(self, mapping: MappingLoader, max_retries: int = 2):
         result = self.validator.validate_build()
 
         if result["build_success"]:
             print("✅ Build passed, no retry needed.")
             return {"status": "success", "retry_attempts": 0, "errors": []}
 
+        # Step 1: Attempt build.gradle fix
+        print("🔍 Build failed. Attempting to fix build.gradle...")
+        build_fixer_result = self.build_fixer.fix(result["raw_output"])
+        if build_fixer_result["status"] == "fixed":
+            print(f"🛠 Applied build.gradle fixes: {build_fixer_result['fixes']}")
+            result = self.validator.validate_build()
+            if result["build_success"]:
+                print("✅ Build succeeded after build.gradle fix.")
+                return {
+                    "status": "success_after_build_gradle_fix",
+                    "retry_attempts": 0,
+                    "fixes": build_fixer_result["fixes"]
+                }
+
+        # Step 2: Retry file-based fixes
         error_files = set()
         for err in result["errors"]:
             relative_path = os.path.relpath(err["file"], self.migrated_dir)
@@ -44,7 +62,6 @@ class RetryAgent:
                 fix_log = self.fixer.fix_file(file, sources, [], self.stitcher)
                 retry_logs.append(fix_log["fix_log"])
 
-                # Optionally try completion too
                 if fix_log["fix_log"]["status"] != "success":
                     print(f"🔍 Trying completion for: {file}")
                     completion_log = self.completer.complete_missing_logic(file, sources, [], self.stitcher)
@@ -60,10 +77,10 @@ class RetryAgent:
                     "errors": [],
                     "retry_logs": retry_logs
                 }
-            else:
-                error_files = set(
-                    os.path.relpath(err["file"], self.migrated_dir) for err in validation["errors"]
-                )
+
+            error_files = set(
+                os.path.relpath(err["file"], self.migrated_dir) for err in validation["errors"]
+            )
 
         print("❌ Build still failing after max retries.")
         return {
